@@ -85,36 +85,99 @@ Expected output:
 
 ## Full workflow
 
-### Step 1 — Build the index
+### Step 1 — Install humann (for its databases)
 
-You need:
-- `pangenome.fna` — nucleotide FASTA of all gene sequences (e.g. ChocoPhlAn subset)
-- `gene_families.tsv` — two-column TSV: `gene_name<TAB>gene_family` (e.g. UniRef90 cluster)
-- `pathways.json` (optional) — pathway definitions (see format below)
+FastPath uses the same ChocoPhlAn pangenome and MetaCyc pathway databases as HUMAnN3.
+Install humann to get access to its downloader and bundled pathway files:
+
+```bash
+pip install humann
+```
+
+### Step 2 — Download ChocoPhlAn and extract `pangenome.fna` + `gene_families.tsv`
+
+```bash
+python scripts/prepare_pangenome.py \
+    --db-dir /data/chocophlan \
+    --out-dir /data/fastpath_db
+```
+
+This downloads the full ChocoPhlAn database (~15 GB, 30–60 min on a fast connection)
+and extracts two files into `--out-dir`:
+
+- `pangenome.fna` — all gene nucleotide sequences concatenated
+- `gene_families.tsv` — `gene_name<TAB>UniRef90_family` for every gene
+
+If you have already run `humann_databases --download chocophlan full <dir>`, skip the
+download with `--no-download`:
+
+```bash
+python scripts/prepare_pangenome.py \
+    --db-dir /data/chocophlan \
+    --out-dir /data/fastpath_db \
+    --no-download
+```
+
+To work with a subset of species, filter by filename substring:
+
+```bash
+python scripts/prepare_pangenome.py \
+    --db-dir /data/chocophlan \
+    --out-dir /data/fastpath_db \
+    --no-download \
+    --species "Bacteroides_dorei" "Prevotella_copri"
+```
+
+### Step 3 — Build `pathways.json` from MetaCyc
+
+```bash
+python scripts/build_pathways_json.py \
+    --out-dir /data/fastpath_db
+```
+
+This reads two files bundled with humann (auto-detected after `pip install humann`):
+
+- `metacyc_pathways_structured_filtered_v24` — 887 MetaCyc pathway definitions
+- `metacyc_reactions_level4ec_only.uniref.bz2` — reaction → UniRef90 family mapping
+
+And writes to `--out-dir`:
+
+- `pathways.json` — 880 pathways with integer-keyed gene-family reaction slots
+- `family_index.tsv` — `integer_id<TAB>UniRef90_family` lookup table
+
+If you have the files in non-standard locations, supply them explicitly:
+
+```bash
+python scripts/build_pathways_json.py \
+    --pathways  /path/to/metacyc_pathways_structured_filtered \
+    --reactions /path/to/metacyc_reactions_level4ec_only.uniref.bz2 \
+    --out-dir   /data/fastpath_db
+```
+
+### Step 4 — Build the FastPath k-mer index
 
 ```bash
 fastpath build \
-    --fasta     pangenome.fna \
-    --gene-map  gene_families.tsv \
-    --pathways  pathways.json \
-    --out-dir   /db/fastpath_index \
-    --kmer-size 31 \
-    --max-kmers 50000000    # ≈400 MB RAM; increase for larger databases
+    --fasta     /data/fastpath_db/pangenome.fna \
+    --gene-map  /data/fastpath_db/gene_families.tsv \
+    --pathways  /data/fastpath_db/pathways.json \
+    --out-dir   /data/fastpath_index \
+    --max-kmers 200000000    # ~1.6 GB RAM for full ChocoPhlAn; use 50000000 (≈400 MB) for a lighter build
 ```
 
-### Step 2 — Profile reads
+### Step 5 — Profile reads
 
 ```bash
 fastpath run \
     --input  sample_R1.fastq.gz sample_R2.fastq.gz \
-    --index  /db/fastpath_index \
+    --index  /data/fastpath_index \
     --out-dir results/ \
-    --min-hits        2     \  # k-mer hits required per gene per read
-    --min-identity    0.80  \  # fraction of read k-mers that must hit
-    --pathway-coverage 0.80    # fraction of reactions required to report pathway
+    --min-hits        2     \
+    --min-identity    0.80  \
+    --pathway-coverage 0.80
 ```
 
-### Step 3 — Inspect results
+### Step 6 — Inspect results
 
 ```bash
 fastpath inspect results/sample_pathways.tsv
