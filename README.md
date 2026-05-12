@@ -13,7 +13,7 @@ It is inspired by [HUMAnN3](https://huttenhower.sph.harvard.edu/humann/) but is 
 |---|---|---|
 | Nucleotide search | Bowtie2 (full alignment) | k-mer exact match (hash lookup) |
 | Translated search | DIAMOND | *(roadmap)* |
-| Memory | 10–40 GB (pangenome + index) | Tunable budget (default ≈ 400 MB) |
+| Memory | 10–40 GB (pangenome + index) | Tunable budget (default ≈ 200 MB at 10M k-mers) |
 | Speed | Minutes–hours | Seconds–minutes |
 | Streaming | No (loads reads into RAM) | Yes (O(1) per read) |
 | Pathway scoring | MinPath ILP | Harmonic-mean coverage scoring |
@@ -156,14 +156,26 @@ python scripts/build_pathways_json.py \
 
 ### Step 4 — Build the FastPath k-mer index
 
+Choose `--max-kmers` based on how much RAM you have available:
+
+| `--max-kmers` | RAM used | Coverage |
+|---|---|---|
+| `10000000` | ~200 MB | Default — good for testing and species-targeted runs |
+| `40000000` | ~800 MB | Recommended for most production runs |
+| `100000000` | ~2 GB | Near-full ChocoPhlAn coverage |
+
 ```bash
 fastpath build \
     --fasta     /data/fastpath_db/pangenome.fna \
     --gene-map  /data/fastpath_db/gene_families.tsv \
     --pathways  /data/fastpath_db/pathways.json \
     --out-dir   /data/fastpath_index \
-    --max-kmers 200000000    # ~1.6 GB RAM for full ChocoPhlAn; use 50000000 (≈400 MB) for a lighter build
+    --max-kmers 40000000
 ```
+
+> The index uses a flat array-backed hash table (12 bytes/slot). Memory is
+> allocated upfront in one contiguous block — what you see in the table above
+> is the total, with no hidden overhead.
 
 ### Step 5 — Profile reads
 
@@ -241,7 +253,7 @@ FastPath uses a simple JSON structure where each pathway lists its reactions and
 from fastpath import KmerIndex, AbundanceProfiler, PathwayScorer
 
 # Build index
-idx = KmerIndex(k=31, max_kmers=50_000_000)
+idx = KmerIndex(k=31, max_kmers=10_000_000)
 idx.add_sequence(gene_sequence, gene_id=42)
 idx.save("index.bin.gz")
 
@@ -261,13 +273,23 @@ pathway_abund = scorer.score(gene_cpm)
 
 ## Memory tuning
 
-The dominant memory cost is the k-mer index. Use `--max-kmers` to set a hard budget:
+The dominant memory cost is the k-mer index. Use `--max-kmers` to set a hard budget.
 
-| `--max-kmers` | Approx. RAM | Suitable for |
-|---|---|---|
-| 10 000 000 | ~80 MB | Small custom databases |
-| 50 000 000 | ~400 MB | Standard use (default) |
-| 200 000 000 | ~1.6 GB | Full ChocoPhlAn-scale |
+The index uses a flat array-backed hash table (12 bytes/slot, load factor 0.6),
+so memory scales predictably — unlike Python dicts which cost ~180 bytes per entry:
+
+| `--max-kmers` | Slots allocated | Approx. RAM | Suitable for |
+|---|---|---|---|
+| 2 000 000 | 4M | ~50 MB | Quick tests, tiny databases |
+| 10 000 000 | 17M | ~200 MB | Standard use **(default)** |
+| 40 000 000 | 67M | ~800 MB | Larger subsets of ChocoPhlAn |
+| 100 000 000 | 168M | ~2 GB | Near-full ChocoPhlAn |
+
+> **Note:** Full ChocoPhlAn contains ~150M unique 31-mers. With the default of 10M,
+> FastPath indexes the first 10M k-mers encountered and silently skips the rest —
+> which reduces sensitivity on uncommon organisms. For production whole-database
+> profiling, set `--max-kmers 40000000` or higher and ensure you have the RAM available.
+> The table above uses exact figures: 12 bytes/slot × next_power_of_2(max_kmers / 0.6).
 
 When the budget is reached, additional k-mers are silently skipped. Sensitivity decreases gracefully; you can inspect how many k-mers were indexed with the build log.
 
